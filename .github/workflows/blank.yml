@@ -1,0 +1,602 @@
+Windows 
+1.1Patcher.py 
+import os 
+import subprocess 
+from datetime import datetime, timedelta 
+import smtplib 
+import getpass 
+from email.mime.text import MIMEText 
+from email.mime.multipart import MIMEMultipart 
+LOG_PATH = r"C:\\Patcher\\Records.log" 
+EXE_PATH = r"C:\\Patcher\\PatchManager.exe" 
+def send_email(subject, body): 
+try: 
+sender, password, receiver = 'sender_email@gmail.com', 'YOUR_PASSWORD', 
+'receiver_email@gmail.com' 
+msg = MIMEMultipart() 
+msg['Subject'], msg['From'], msg['To'] = subject, sender, receiver 
+msg.attach(MIMEText(body, 'plain')) 
+with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp: 
+smtp.login(sender, password) 
+smtp.send_message(msg) 
+print("[INFO] Email sent successfully.") 
+except Exception as e: 
+print(f"[ERROR] Email failed: {e}") 
+def check_status(): 
+for task in ['PatchInformer', 'PatchDeployer', 'PatchUserCall']: 
+print(f"\n--- Status for: {task} ---") 
+result = subprocess.run(["schtasks", "/Query", "/TN", task, "/V", "/FO", "LIST"], capture_output=True, 
+text=True) 
+print(result.stdout if result.returncode == 0 else f"[ERROR] {result.stderr.strip()}") 
+def reschedule_patch(): 
+now, friday = datetime.now(), datetime.now() + timedelta((4 - datetime.now().weekday()) % 7) 
+end_of_week = friday.replace(hour=23, minute=58) 
+print(f"\n[INFO] Allowed time range: {now.strftime('%Y-%m-%d %H:%M')} to {end_of_week.strftime('%Y
+%m-%d %H:%M')}") 
+day_map = {'MON': 0, 'TUE': 1, 'WED': 2, 'THU': 3, 'FRI': 4} 
+while True: 
+day = input("Enter day (e.g., TUE, WED, THU, FRI): ").strip().upper() 
+if day in day_map and day_map[day] >= now.weekday(): break 
+print("[ERROR] Invalid or past day. Try again.") 
+while True: 
+time_input = input("Enter time (HH:MM): ").strip() 
+try: 
+input_time = datetime.strptime(time_input, "%H:%M").time() 
+scheduled_dt = now.replace(hour=input_time.hour, minute=input_time.minute) + 
+timedelta(days=day_map[day] - now.weekday()) 
+if now < scheduled_dt < end_of_week: break 
+print("[ERROR] Time must be within allowed range.") 
+except: 
+print("[ERROR] Invalid time format.") 
+try: 
+subprocess.run([ 
+"schtasks", "/Create", "/SC", "WEEKLY", "/D", day, "/TN", "PatchUserCall", "/TR", f"powershell 
+Command \"Start-Process '{EXE_PATH}' -Verb runAs\"", 
+"/ST", time_input, "/F" 
+], check=True) 
+subprocess.run([ 
+"powershell.exe", "-NoLogo", "-NonInteractive", "-NoProfile", "-WindowStyle", "Hidden", "
+ExecutionPolicy", "Bypass", 
+"-Command", f"$task = Get-ScheduledTask -TaskName 'PatchUserCall'; 
+$task.Settings.DisallowStartIfOnBatteries = $false; $task.Settings.StopIfGoingOnBatteries = $false; 
+$task.Settings.RunOnlyIfIdle = $false; Set-ScheduledTask -TaskName 'PatchUserCall' -Settings $task.Settings" 
+], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+creationflags=subprocess.CREATE_NO_WINDOW, check=True) 
+next_week = (now + timedelta(days=(7 - now.weekday()))).strftime("%m/%d/%Y") 
+for task in ['PatchInformer', 'PatchDeployer']: 
+subprocess.run(["schtasks", "/Change", "/TN", task, "/SD", next_week], check=True) 
+body = f"Dear User,\n\nA patch update has been scheduled on {day} at {time_input}.\nDate of Scheduling: 
+{now.strftime('%Y-%m-%d')}\n\nFor support, contact: it@admin.com\n\nRegards,\nAutomated Patch 
+System\n\nAction performed by: {getpass.getuser()}" 
+send_email("Patch Task Rescheduled", body) 
+except subprocess.CalledProcessError as e: 
+print(f"[ERROR] Failed to reschedule task: {e}") 
+def delete_user_call(): 
+try: 
+subprocess.run(["schtasks", "/Delete", "/TN", "PatchUserCall", "/F"], check=True) 
+today = datetime.now().strftime("%m/%d/%Y") 
+for task in ['PatchInformer', 'PatchDeployer']: 
+subprocess.run(["schtasks", "/Change", "/TN", task, "/SD", today], check=True) 
+body = f"Dear User,\n\nPatchUserCall has been removed.\nPatchInformer and PatchDeployer are restored to 
+run this week.\n\nAction performed by: {getpass.getuser()}\n\nRegards,\nAutomated Patch System" 
+send_email("Patch Restoration Notice", body) 
+except Exception as e: 
+print(f"[ERROR] Failed to delete task or restore: {e}") 
+def read_logs(): 
+try: 
+with open(LOG_PATH, 'r') as f: 
+lines = f.readlines() 
+if lines: print("\n--- Last 20 Log Entries ---\n" + "\n".join(lines[-20:])) 
+else: print("[INFO] Log file is empty.") 
+except Exception as e: 
+print(f"[ERROR] Could not read log file: {e}") 
+def main(): 
+while True: 
+print("\n=========== Automated Patch Manager ===========\n1. Check task statuses\n2. Re-schedule 
+patch deployment\n3. Delete rescheduled task\n4. Read patch logs\n5. Exit") 
+choice = input("Select an option (1-5): ").strip() 
+if choice == '1': check_status() 
+elif choice == '2': reschedule_patch() 
+elif choice == '3': delete_user_call() 
+elif choice == '4': read_logs() 
+elif choice == '5': break 
+else: print("[ERROR] Invalid choice.") 
+if _name_ == "_main_": 
+main()
+
+1.2 PatchManager.py 
+import os 
+import re 
+import sys 
+import smtplib 
+import getpass 
+import subprocess 
+from datetime import datetime 
+from email.mime.text import MIMEText 
+from email.mime.base import MIMEBase 
+from email.mime.multipart import MIMEMultipart 
+from email import encoders 
+CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0 
+Automated Patch Management  
+Scheduler for Windows and Linux 
+39 
+log_dir = r"C:\Patcher" 
+today_str = datetime.now().strftime('%d%m%Y') 
+windows_log = os.path.join(log_dir, f"windows_updates_{today_str}.log") 
+winget_log = os.path.join(log_dir, f"winget_updates_{today_str}.log") 
+output_report = os.path.join(log_dir, f"PatchReport_{today_str}.txt") 
+execution_log = os.path.join(log_dir, "Records.log") 
+def write_log(message): 
+with open(execution_log, 'a') as log: 
+log.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n") 
+def run_powershell_script(): 
+try: 
+ps_script = f''' 
+New-Item -Path "{log_dir}" -ItemType Directory -Force 
+Import-Module PSWindowsUpdate 
+$updates = Get-WindowsUpdate 
+$updates | Out-File "{windows_log}" -Encoding UTF8 
+''' 
+result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True, text=True, 
+creationflags=CREATE_NO_WINDOW) 
+if result.stderr: write_log("Windows updates check FAILED.") 
+else: write_log("Windows updates checked successfully.") 
+except Exception as e: 
+write_log(f"Windows updates check FAILED: {e}") 
+def run_winget_upgrade_list(): 
+try: 
+result = subprocess.run("winget upgrade --include-unknown", shell=True, capture_output=True, text=True, 
+creationflags=CREATE_NO_WINDOW) 
+with open(winget_log, "w") as f: f.write(result.stdout) 
+write_log("Application/software updates checked via winget successfully.") 
+return result.stdout 
+except Exception as e: 
+write_log(f"Application/software update check FAILED: {e}") 
+return "" 
+def parse_windows_update_count(log_path): 
+return sum(1 for line in open(log_path, "r", encoding="utf-8", errors="ignore") if 
+re.search(r'\d+(?:\.\d+)?\s*(KB|MB)', line)) 
+def estimate_total_time(update_count, minutes_per_update): 
+return update_count * minutes_per_update * 60  
+def format_time(seconds): 
+hours, remainder = divmod(int(seconds), 3600) 
+minutes, secs = divmod(remainder, 60) 
+return f"{hours} hr {minutes} min {secs} sec" if hours else f"{minutes} min {secs} sec" 
+def parse_windows_log(path): 
+updates = [] 
+with open(path, 'r', encoding='utf-8', errors='ignore') as f: 
+for line in f: 
+if re.search(r'\d+(KB|MB)', line): 
+size_match = re.search(r'(\d+(?:\.\d+)?\s*(KB|MB))', line) 
+if size_match: updates.append((line.split(size_match.group(1))[-1].strip()[:70], size_match.group(1))) 
+return updates 
+def parse_winget_log(path): 
+upgrades = [] 
+with open(path, 'r', encoding='utf-8', errors='ignore') as f: 
+lines = f.readlines() 
+for line in lines: 
+if line.startswith("Name"): reading = True 
+if reading and line.strip() and not line.startswith("-"): 
+parts = re.split(r'\s{2,}', line.strip()) 
+if len(parts) >= 5: 
+upgrades.append((parts[0][:30], parts[2], parts[3], parts[4])) 
+return upgrades 
+def generate_structured_report(windows_data, winget_data, output_file): 
+try: 
+with open(output_file, 'w', encoding='utf-8') as f: 
+f.write("=== WINDOWS DRIVER / HARDWARE / FIRMWARE UPDATES ===\n\n") 
+f.write(f"{'Title':70} {'Size':>10}\n{'-'*82}\n") 
+if windows_data:  
+for title, size in windows_data: 
+f.write(f"{title:70} {size:>10}\n") 
+else: f.write("No Windows updates found.\n") 
+f.write("\n\n=== APPLICATION UPDATES VIA WINGET ===\n\n") 
+f.write(f"{'Name':30} {'Current Version':20} {'Available Version':20} {'Source'}\n{'-'*100}\n") 
+if winget_data: 
+for name, current, available, source in winget_data: 
+f.write(f"{name:30} {current:20} {available:20} {source}\n") 
+else: f.write("No Winget upgrades found.\n") 
+write_log("Report generated successfully.") 
+except Exception as e: 
+write_log(f"Report generation FAILED: {e}")  
+def send_email(estimated_time): 
+try: 
+msg = MIMEMultipart() 
+msg['Subject'] = f'Patch Update Reminder - {getpass.getuser()}' 
+msg['From'], msg['To'] = 'Automated Patch Manager', 'receipent_email@gmail.com' 
+msg.attach(MIMEText( 
+f'Dear User,\n\nPatch updates will be applied today ({datetime.now().strftime("%Y-%m-%d")}) at 12:00 
+AM Midnight.\n' 
+f'Estimated Total Patch Time: {estimated_time}\nAttached is the full patch summary.\n\n' 
+f'1. Ensure the system is open and live during the scheduled time.\n2. Respond to all installation prompts.\n' 
+f'3. Ensure you have a reliable and fast network.\n\nNote: Contact sysadmin@it.com if any 
+issues.\n\nRegards,\nAutomated Patch System', 'plain' 
+)) 
+with open(output_report, 'rb') as attachment: 
+part = MIMEBase('application', 'octet-stream') 
+part.set_payload(attachment.read()) 
+encoders.encode_base64(part) 
+part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(output_report)}') 
+msg.attach(part) 
+with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp: 
+smtp.login('sender_email@gmail.com', 'YOUR_PASSWORD') 
+smtp.sendmail('sender_email@gmail.com', 'receipent_email@gmail.com', msg.as_string()) 
+write_log("Email sent successfully.") 
+except Exception as e: 
+write_log(f"Email sending FAILED: {e}") 
+def clean_up_logs(): 
+target_files = {f"windows_updates_{today_str}.log", f"winget_updates_{today_str}.log", 
+f"PatchReport_{today_str}.txt"} 
+for file in os.listdir(log_dir): 
+if file in target_files: 
+try: 
+os.remove(os.path.join(log_dir, file)) 
+write_log(f"[*] Deleted log file: {file}") 
+except Exception as e: 
+write_log(f"[!] Failed to delete {file}: {str(e)}") 
+if __name__ == "__main__": 
+write_log("==== Execution Started ====") 
+run_powershell_script() 
+Automated Patch Management  
+Scheduler for Windows and Linux  
+run_winget_upgrade_list() 
+windows_update_count = parse_windows_update_count(windows_log) 
+winget_data = parse_winget_log(winget_log) 
+winget_app_count = len(winget_data) 
+total_seconds = (windows_update_count * 90) + (winget_app_count * 90) 
+estimated_time = format_time(total_seconds) 
+write_log(f"Estimated total install time: {estimated_time}") 
+win_data = parse_windows_log(windows_log) 
+generate_structured_report(win_data, winget_data, output_report) 
+send_email(estimated_time) 
+clean_up_logs() 
+write_log("[*] Log files discarded successfully.") 
+write_log("==== Execution Completed ====\n")
+
+. Linux 
+2.1. Patcher.py 
+import os 
+import sys 
+import subprocess 
+from datetime import datetime 
+import smtplib 
+from email.mime.text import MIMEText 
+from email.mime.multipart import MIMEMultipart 
+from email.mime.application import MIMEApplication 
+import getpass 
+LOG_PATH = "/var/log/Patch/Records.log" 
+SCRIPT_PATH = os.path.join(os.getcwd(), "updates_task.py") 
+EMAIL_SENDER = "sender_email@gmail.com" 
+EMAIL_PASSWORD = 'YOUR_PASSWORD' 
+EMAIL_RECEIVER = "receiver_email@gmail.com" 
+REPORT_PATH = os.path.join(os.getcwd(),"generated_report.txt") 
+CRON_MARKERS = { 
+'SUPERVISER': "# SUPERVISER", 
+'AUTO': "# PATCH-AUTO", 
+'IMPLEMENTER': "# PATCH-IMPLEMENTER", 
+'USER': "# PATCH-USER" 
+}  
+def require_sudo(): 
+if os.geteuid() != 0: 
+print("[ERROR] This script must be run with sudo/root privileges.") 
+sys.exit(1) 
+def log_message(message): 
+timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
+entry = f"[{timestamp}] {message}\n" 
+print(entry.strip()) 
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True) 
+with open(LOG_PATH, 'a') as log_file: 
+log_file.write(entry) 
+def get_apt_upgrades(): 
+try: 
+result = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True) 
+lines = result.stdout.splitlines() 
+return [line for line in lines if "upgradable from" in line] 
+except Exception as e: 
+log_message(f"APT upgrade check failed: {e}") 
+return [] 
+def generate_structured_report(os_data, output_file): 
+try: 
+with open(output_file, 'w', encoding='utf-8') as f: 
+f.write("================================= SYSTEM PACKAGE UPDATES (APT) 
+=====================================\n\n") 
+if os_data: 
+f.write(f"{'Package Name':<40} {'Current Version':<30} {'New Version':<30}\n") 
+f.write("=" * 100 + "\n") 
+for line in os_data: 
+try: 
+package_part, new_version, *_ = line.split() 
+package = package_part.split('/')[0] 
+current_version = line.split("[upgradable from:")[1].split("]")[0].strip() if "[upgradable from:" in line 
+else "Unknown" 
+f.write(f"{package:<40} {current_version:<30} {new_version:<30}\n") 
+except Exception: 
+f.write(f"[!] Failed to parse line: {line}\n") 
+else: 
+f.write("No APT updates found.\n") 
+except Exception as e: 
+log_message(f"Report generation FAILED: {e}") 
+def send_email(subject, body, attachment_path=None): 
+try:  
+msg = MIMEMultipart() 
+msg['Subject'] = subject 
+msg['From'] = 'Automated Patch Manager' 
+msg['To'] = EMAIL_RECEIVER 
+msg.attach(MIMEText(body, 'plain')) 
+if attachment_path and os.path.exists(attachment_path): 
+with open(attachment_path, "rb") as f: 
+part = MIMEApplication(f.read(), Name=os.path.basename(attachment_path)) 
+part['Content-Disposition'] = f'attachment; filename="{os.path.basename(attachment_path)}"' 
+msg.attach(part) 
+with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp: 
+smtp.login(EMAIL_SENDER, EMAIL_PASSWORD) 
+smtp.send_message(msg) 
+log_message("Email sent successfully.") 
+except Exception as e: 
+log_message(f"Email sending FAILED: {e}") 
+finally: 
+if attachment_path and os.path.exists(attachment_path): 
+os.remove(attachment_path) 
+log_message("Attachment file deleted after sending.") 
+def check_status(): 
+print("\n[INFO] Checking crontab entries for SUPERVISER, PATCH-AUTO, PATCH-IMPLEMENTER, and 
+PATCH-USER...") 
+result = subprocess.run(['crontab', '-l'], capture_output=True, text=True) 
+if result.returncode != 0: 
+print("[INFO] No crontab found.") 
+return 
+lines = result.stdout.strip().splitlines() 
+for name, marker in CRON_MARKERS.items(): 
+found = False 
+for line in lines: 
+if marker in line: 
+status = "ENABLED" if not line.strip().startswith('#') else "DISABLED" 
+print(f"[STATUS] {marker}: {status}") 
+found = True 
+break 
+if not found: 
+print(f"[STATUS] {marker}: NOT FOUND") 
+def reschedule_patch(): 
+print("\n[INFO] You are now rescheduling a patch task.") 
+result = subprocess.run(['crontab', '-l'], capture_output=True, text=True) 
+lines = result.stdout.strip().splitlines() if result.returncode == 0 else [] 
+now = datetime.now() 
+current_day = now.weekday() 
+day_map = {"MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5} 
+print("\nAvailable days for scheduling:") 
+valid_options = [(day, index) for index, (day, _) in enumerate(day_map.items(), 1)] 
+while True: 
+choice = input("\nEnter day (number): ").strip() 
+if not choice.isdigit() or int(choice) not in range(1, len(valid_options)+1): 
+print("[ERROR] Invalid day option.") 
+continue 
+selected_day, selected_day_index = valid_options[int(choice)-1] 
+break 
+while True: 
+time_input = input("Enter time (HH:MM, 24h format): ").strip() 
+try: 
+hour, minute = map(int, time_input.split(":")) 
+selected_time = datetime(now.year, now.month, now.day, hour, minute) 
+if selected_day_index == current_day and selected_time <= now: 
+print("[ERROR] Selected time must be in the future today.") 
+continue 
+break 
+except: 
+print("[ERROR] Invalid time format.") 
+updated_lines = [f"# {line}" if any(m in line and not line.strip().startswith('#') for m in 
+[CRON_MARKERS['AUTO'], CRON_MARKERS['IMPLEMENTER']]) else line for line in lines] 
+cron_line = f"{minute} {hour} * * {selected_day_index} sudo {SCRIPT_PATH}   
+{CRON_MARKERS['USER']}" 
+updated_lines.append(cron_line) 
+apt_data = get_apt_upgrades() 
+generate_structured_report(apt_data, REPORT_PATH) 
+subprocess.run(['crontab'], input='\n'.join(updated_lines) + '\n', text=True) 
+today_date = datetime.now().strftime("%Y-%m-%d") 
+msg_body = ( 
+f'Dear User,\n\n' 
+f'A patch update has been scheduled on {selected_day} at {time_input}.\n' 
+f'Date of Scheduling: {today_date}\n\n' 
+f'Please ensure the following:\n' 
+f'1. System is powered on and connected to the network.\n' 
+f'2. Any installation prompts are acknowledged.\n' 
+f'3. Stable internet connection is available.\n\n' 
+f'NOTE: It can take up much time and resources to install during working hours.\n\n' 
+f'For support, contact: it@admin.com\n\n' 
+f'Regards,\nAutomated Patch System\n\n' 
+f'Action performed by: {getpass.getuser()}' 
+) 
+send_email("Patch Task Rescheduled", msg_body, REPORT_PATH) 
+log_message(f"Patch task rescheduled for {selected_day} at {time_input} by {getpass.getuser()}") 
+def delete_rescheduled_patch(): 
+print("\n[INFO] Deleting user rescheduled patch task and restoring AUTO and IMPLEMENTER entries...") 
+result = subprocess.run(['crontab', '-l'], capture_output=True, text=True) 
+lines = result.stdout.strip().splitlines() if result.returncode == 0 else [] 
+updated_lines = [] 
+user_patch_found = False 
+deleted_time = None 
+for line in lines: 
+if CRON_MARKERS['USER'] in line: 
+user_patch_found = True 
+parts = line.strip().split() 
+if len(parts) >= 2: 
+deleted_time = f"{parts[1]}:{parts[0]}" 
+continue 
+elif any(line.strip().startswith('#') and marker in line for marker in [CRON_MARKERS['AUTO'], 
+CRON_MARKERS['IMPLEMENTER']]): 
+updated_lines.append(line.lstrip('# ').strip()) 
+else: 
+updated_lines.append(line) 
+if not user_patch_found: 
+print("[INFO] No user rescheduled patch found.") 
+return 
+subprocess.run(['crontab'], input='\n'.join(updated_lines) + '\n', text=True) 
+today_date = datetime.now().strftime("%Y-%m-%d") 
+msg_body = ( 
+f'Dear User,\n\n' 
+f'The user rescheduled patch task has been removed.\n' 
+f'Time of Deleted Patch: {deleted_time if deleted_time else "Unknown"}\n' 
+f'The system has now restored default patch tasks.\n' 
+f'Date of Restoration: {today_date}\n\n' 
+f'For support, contact: it@admin.com\n\n' 
+f'Regards,\nAutomated Patch System\n\n' 
+f'Action performed by: {getpass.getuser()}' 
+) 
+send_email("Patch Task Deletion", msg_body) 
+log_message(f"Rescheduled patch task deleted. AUTO and IMPLEMENTER uncommented by 
+{getpass.getuser()}") 
+def view_logs(): 
+print("\n[INFO] Viewing last 15 log entries:") 
+if not os.path.exists(LOG_PATH): 
+print("[INFO] No log file exists.") 
+return 
+with open(LOG_PATH, 'r') as log: 
+lines = log.readlines()[-15:] 
+for i, line in enumerate(lines, 1): 
+print(f"[{i}] {line.strip()}") 
+def main(): 
+require_sudo() 
+user = getpass.getuser() 
+log_message(f"Patch CLI accessed by {user}") 
+while True: 
+print("=" * 60) 
+print("           
+Welcome to Automated Patch Manager") 
+print("=" * 60) 
+print("1. Check status of scheduled patch tasks") 
+print("2. Re-schedule patch task") 
+print("3. Delete re-scheduled patch task") 
+print("4. View logs") 
+print("5. Exit") 
+print("=" * 60) 
+choice = input("\nEnter your choice (1-5): ").strip() 
+if choice == '1': 
+check_status() 
+elif choice == '2': 
+reschedule_patch() 
+elif choice == '3': 
+delete_rescheduled_patch() 
+elif choice == '4': 
+view_logs() 
+elif choice == '5': 
+log_message(f"Patch CLI exited by {user}\n") 
+print("Exiting... Goodbye!") 
+sys.exit(0) 
+else: 
+print("[ERROR] Invalid input. Choose between 1 and 5.") 
+if _name_ == "_main_": 
+main()
+
+PatchManager.py 
+import subprocess 
+from datetime import datetime 
+import os 
+import smtplib 
+from email.mime.multipart import MIMEMultipart 
+from email.mime.text import MIMEText 
+from email.mime.base import MIMEBase 
+from email import encoders 
+import getpass 
+log_dir = "/var/log/Patch" 
+today_str = datetime.now().strftime('%d%m%Y') 
+os_log = os.path.join(log_dir, f"os_updates_{today_str}.log") 
+output_report = os.path.join(log_dir, f"CombinedPatchReport_{today_str}.txt") 
+execution_log = os.path.join(log_dir, "Records.log") 
+os.makedirs(log_dir, exist_ok=True) 
+def write_log(message): 
+timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
+with open(execution_log, 'a') as log: 
+log.write(f"[{timestamp}] {message}\n") 
+def run_system_updates(): 
+try: 
+write_log("Checking for system updates using APT on Kali Linux...") 
+result = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True, text=True) 
+output = result.stdout.strip() 
+with open(os_log, 'w', encoding='utf-8') as f: 
+f.write(output) 
+        upgrades = output.split('\n')[1:] if "Listing..." in output else output.split('\n') 
+ 
+        if upgrades and any(line.strip() for line in upgrades): 
+            write_log("Available upgrades:") 
+        else: 
+            write_log("No upgrades available.") 
+    except Exception as e: 
+        write_log(f"System updates check FAILED: {str(e)}") 
+ 
+def generate_structured_report(os_data, output_file): 
+    try: 
+        with open(output_file, 'w', encoding='utf-8') as f: 
+            f.write("================================= SYSTEM PACKAGE UPDATES (APT) 
+=====================================\n\n") 
+            if os_data: 
+                f.write(f"{'Package Name':<40} {'Current Version':<30} {'New Version':<30}\n") 
+                f.write("=" * 100 + "\n") 
+                for line in os_data: 
+                    try: 
+                        package_part, new_version, *_ = line.split() 
+                        package = package_part.split('/')[0] 
+                        current_version = line.split("[upgradable from:")[1].split("]")[0].strip() if "[upgradable from:" in line 
+else "Unknown" 
+                        f.write(f"{package:<40} {current_version:<30} {new_version:<30}\n") 
+                    except Exception as parse_err: 
+                        f.write(f"[!] Failed to parse line: {line}\n") 
+                        write_log(f"Parsing failed for line: {line} — Error: {parse_err}") 
+            else: 
+                f.write("No APT updates found.\n") 
+ 
+        write_log("Report generated successfully.") 
+    except Exception as e: 
+        write_log(f"Report generation FAILED: {e}") 
+ 
+def send_email(): 
+    try: 
+        email_address = 'sender_email@gmail.com' 
+        password = 'YOUR_PASSWORD' 
+ 
+        if not email_address or not password: 
+            raise ValueError("Missing email credentials in .env") 
+ 
+        today_date = datetime.now().strftime('%Y-%m-%d') 
+ 
+msg = MIMEMultipart() 
+msg['Subject'] = f'Linux Patch Update Reminder - {getpass.getuser()}' 
+msg['From'] = 'Automated Patch Manager' 
+msg['To'] = 'receiver_email@gmail.com' 
+msg_body = ( 
+f'Dear User,\n\n' 
+f'This is a reminder that Linux patch updates will be applied today ({today_date}) midnight 12:00 AM.\n' 
+f'Attached is the full patch summary.\n\n’ 
+f'Note: If any issues, contact sysadmin@admin.com\n\n' 
+f'Regards,\nAutomated Patch System' 
+) 
+msg.attach(MIMEText(msg_body, 'plain')) 
+with open(output_report, 'rb') as attachment: 
+part = MIMEBase('application', 'octet-stream') 
+part.set_payload(attachment.read()) 
+encoders.encode_base64(part) 
+part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(output_report)}') 
+msg.attach(part) 
+with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server: 
+smtp_server.login(email_address, password) 
+smtp_server.sendmail(email_address, 'receiver_email@gmail.com', msg.as_string()) 
+write_log("Email sent successfully.") 
+except Exception as e: 
+write_log(f"Email sending FAILED: {e}") 
+def clean_up_logs(): 
+for file in os.listdir(log_dir): 
+file_path = os.path.join(log_dir, file) 
+if os.path.isfile(file_path) and file != "Records.log": 
+try: 
+os.remove(file_path) 
+write_log(f"[*] Deleted log file: {file}") 
+except Exception as e: 
+write_log(f"[!] Failed to delete {file}: {str(e)}") 
+if _name_ == "_main_": 
+write_log("==== Linux Patch Execution Started ====") 
+run_system_updates() 
+with open(os_log, 'r', encoding='utf-8', errors='ignore') as f: 
+os_data = [line.strip() for line in f.readlines() if line.strip() and not line.startswith("Listing")] 
+generate_structured_report(os_data, output_report) 
+send_email() 
+clean_up_logs() 
+write_log("[*] Log files discarded successfully.") 
+write_log("==== Linux Patch Execution Completed ====\n")
